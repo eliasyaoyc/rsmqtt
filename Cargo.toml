@@ -5,5 +5,5 @@ members = [
     "libs/testutil",
 
     "apps/rsmqttd",
-#    "apps/rsmqtt_bench",
+    "apps/rsmqtt_bench",
 ]
