@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use bytestring::ByteString;
 use codec::{Codec, Packet};
 use futures_util::future::BoxFuture;
-use service::{client_loop, ServiceState, StorageMemory};
+use service::{client_loop, RemoteAddr, ServiceState, StorageMemory};
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 use tokio::sync::Mutex;
 
@@ -49,7 +49,10 @@ fn execute_step(
                     ctx.state.clone(),
                     server_reader,
                     server_writer,
-                    format!("test:{}", id),
+                    RemoteAddr {
+                        protocol: "memory",
+                        addr: Some(format!("{}", id)),
+                    },
                 ));
                 assert!(
                     ctx.clients.insert(id.clone(), codec).is_none(),

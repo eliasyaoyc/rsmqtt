@@ -11,8 +11,9 @@ mod state;
 mod storage;
 mod sys_topics;
 
-pub use client_loop::client_loop;
+pub use client_loop::{client_loop, RemoteAddr};
 pub use config::ServiceConfig;
+pub use filter::TopicFilter;
 pub use state::ServiceState;
 pub use storage::memory::StorageMemory;
 pub use storage::{Storage, StorageMetrics};

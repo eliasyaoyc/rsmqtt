@@ -1,4 +1,5 @@
 use std::convert::TryInto;
+use std::fmt::{self, Display, Formatter};
 use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,9 +30,26 @@ enum Qos2State {
     Recorded,
 }
 
+#[derive(Debug, Clone)]
+pub struct RemoteAddr {
+    pub protocol: &'static str,
+    pub addr: Option<String>,
+}
+
+impl Display for RemoteAddr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}://{}",
+            self.protocol,
+            self.addr.as_deref().unwrap_or("unknown")
+        )
+    }
+}
+
 pub struct Connection<R, W> {
     state: Arc<ServiceState>,
-    remote_addr: String,
+    remote_addr: RemoteAddr,
     client_id: Option<ByteString>,
     control_sender: Option<mpsc::UnboundedSender<Control>>,
     notify: Arc<Notify>,
@@ -941,7 +959,7 @@ pub async fn client_loop(
     state: Arc<ServiceState>,
     reader: impl AsyncRead + Send + Unpin,
     writer: impl AsyncWrite + Send + Unpin,
-    remote_addr: impl Into<String>,
+    remote_addr: RemoteAddr,
 ) {
     let remote_addr = remote_addr.into();
     state.metrics.inc_socket_connections(1);
