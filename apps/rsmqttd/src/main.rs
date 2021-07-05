@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::default_trait_access)]
 
+mod acl;
 mod api;
 mod config;
 mod server;
