@@ -9,7 +9,7 @@ impl Filter {
         Filter(TopicFilter::try_new(&filter))
     }
 
-    pub fn matches(&self, topic: String) -> bool {
+    pub fn test(&self, topic: String) -> bool {
         match &self.0 {
             Some(filter) => filter.matches(&topic),
             None => false,

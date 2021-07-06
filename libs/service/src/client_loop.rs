@@ -22,7 +22,7 @@ use crate::error::Error;
 use crate::filter::{self, TopicFilter};
 use crate::message::Message;
 use crate::state::Control;
-use crate::ServiceState;
+use crate::{Action, ConnectionInfo, ServiceState};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Qos2State {
@@ -117,6 +117,48 @@ where
             properties: properties.unwrap_or_default(),
         }))
         .await
+    }
+
+    async fn check_acl(&self, action: Action, topic: &str) -> Result<(), Error> {
+        let mut allow = true;
+
+        for (name, plugin) in &self.state.plugins {
+            match plugin
+                .check_acl(
+                    ConnectionInfo {
+                        remote_addr: &self.remote_addr,
+                        uid: self.uid.as_deref(),
+                    },
+                    action,
+                    topic,
+                )
+                .await
+            {
+                Ok(false) => {
+                    allow = false;
+                    break;
+                }
+                Ok(true) => {}
+                Err(err) => {
+                    tracing::error!(
+                        plugin = %name,
+                        error = %err,
+                        "failed to call plugin::check_acl",
+                    );
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
+                }
+            }
+        }
+
+        if !allow {
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::NotAuthorized,
+            ));
+        }
+
+        Ok(())
     }
 
     async fn handle_packet(&mut self, packet: Packet) -> Result<(), Error> {
@@ -488,6 +530,9 @@ where
             }
         };
 
+        // check acl
+        self.check_acl(Action::Publish, &publish.topic).await?;
+
         let retain = publish.retain;
         let packet_id = publish.packet_id;
 
@@ -850,6 +895,9 @@ where
                 continue;
             }
 
+            // check acl
+            self.check_acl(Action::Subscribe, &filter.path).await?;
+
             let qos = filter.qos.min(self.state.config.maximum_qos);
 
             reason_codes.push(match qos {
@@ -1088,7 +1136,6 @@ pub async fn client_loop(
     writer: impl AsyncWrite + Send + Unpin,
     remote_addr: RemoteAddr,
 ) {
-    let remote_addr = remote_addr.into();
     state.metrics.inc_socket_connections(1);
 
     let (control_sender, mut control_receiver) = mpsc::unbounded_channel();

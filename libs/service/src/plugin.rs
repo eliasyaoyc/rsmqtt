@@ -5,7 +5,7 @@ use crate::RemoteAddr;
 
 #[derive(Debug)]
 pub struct ConnectionInfo<'a> {
-    pub remote_addr: RemoteAddr,
+    pub remote_addr: &'a RemoteAddr,
     pub uid: Option<&'a str>,
 }
 

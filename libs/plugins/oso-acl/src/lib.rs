@@ -34,7 +34,7 @@ impl PluginFactory for OsoAcl {
         oso.register_class(
             types::Filter::get_polar_class_builder()
                 .set_constructor(types::Filter::new)
-                .add_method("matches", types::Filter::matches)
+                .add_method("test", types::Filter::test)
                 .build(),
         )?;
 
@@ -90,7 +90,7 @@ mod tests {
           
           allow(conn: Connection, action: String, "test") if conn.addr == "1.1.1.1";
           
-          allow(conn: Connection, action: String, topic: String) if Filter("a/+/c").matches(topic);
+          allow(conn: Connection, action: String, topic: String) if new Filter("a/+/c").test(topic);
         "#;
         let acl = OsoAcl
             .create(serde_yaml::from_str(rules).unwrap())
@@ -100,11 +100,11 @@ mod tests {
         assert!(acl
             .check_acl(
                 ConnectionInfo {
-                    remote_addr: RemoteAddr {
+                    remote_addr: &RemoteAddr {
                         protocol: "tcp",
                         addr: Some("127.0.0.1".into()),
                     },
-                    uid: Some("sunli".into()),
+                    uid: Some("sunli"),
                 },
                 Action::Publish,
                 "test"
@@ -115,11 +115,11 @@ mod tests {
         assert!(!acl
             .check_acl(
                 ConnectionInfo {
-                    remote_addr: RemoteAddr {
+                    remote_addr: &RemoteAddr {
                         protocol: "tcp",
                         addr: Some("127.0.0.1".into()),
                     },
-                    uid: Some("sunli2".into()),
+                    uid: Some("sunli2"),
                 },
                 Action::Publish,
                 "test"
@@ -130,11 +130,11 @@ mod tests {
         assert!(!acl
             .check_acl(
                 ConnectionInfo {
-                    remote_addr: RemoteAddr {
+                    remote_addr: &RemoteAddr {
                         protocol: "tcp",
                         addr: Some("127.0.0.1".into()),
                     },
-                    uid: Some("sunli".into()),
+                    uid: Some("sunli"),
                 },
                 Action::Subscribe,
                 "test"
@@ -145,7 +145,7 @@ mod tests {
         assert!(acl
             .check_acl(
                 ConnectionInfo {
-                    remote_addr: RemoteAddr {
+                    remote_addr: &RemoteAddr {
                         protocol: "tcp",
                         addr: Some("1.1.1.1".into()),
                     },
@@ -160,7 +160,7 @@ mod tests {
         assert!(acl
             .check_acl(
                 ConnectionInfo {
-                    remote_addr: RemoteAddr {
+                    remote_addr: &RemoteAddr {
                         protocol: "tcp",
                         addr: Some("1.1.1.1".into()),
                     },
@@ -175,7 +175,7 @@ mod tests {
         assert!(acl
             .check_acl(
                 ConnectionInfo {
-                    remote_addr: RemoteAddr {
+                    remote_addr: &RemoteAddr {
                         protocol: "tcp",
                         addr: Some("127.0.0.1".into()),
                     },
@@ -183,6 +183,21 @@ mod tests {
                 },
                 Action::Subscribe,
                 "a/b/c"
+            )
+            .await
+            .unwrap());
+
+        assert!(!acl
+            .check_acl(
+                ConnectionInfo {
+                    remote_addr: &RemoteAddr {
+                        protocol: "tcp",
+                        addr: Some("127.0.0.1".into()),
+                    },
+                    uid: None,
+                },
+                Action::Subscribe,
+                "a/b/e"
             )
             .await
             .unwrap());

@@ -157,7 +157,7 @@ fn execute_step(
                     execute_step(
                         ctx.clone(),
                         step,
-                        id.clone().or(new_id.clone()),
+                        id.clone().or_else(|| new_id.clone()),
                         client_id.clone(),
                     )
                     .await;
