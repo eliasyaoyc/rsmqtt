@@ -3,8 +3,9 @@ use std::time::{Duration, SystemTime};
 use bytes::Bytes;
 use bytestring::ByteString;
 use codec::{LastWill, Publish, PublishProperties, Qos};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     publisher: Option<ByteString>,
     created_at: SystemTime,

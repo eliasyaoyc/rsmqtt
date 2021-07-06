@@ -6,6 +6,7 @@ members = [
     "libs/passwd_util",
 
     "libs/storages/memory",
+    "libs/storages/rocksdb",
 
     "libs/plugins/basic-auth",
     "libs/plugins/oso-acl",
