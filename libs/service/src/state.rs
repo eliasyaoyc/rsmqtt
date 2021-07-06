@@ -8,6 +8,7 @@ use codec::LastWill;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
+use crate::auth::Auth;
 use crate::config::ServiceConfig;
 use crate::message::Message;
 use crate::metrics::InternalMetrics;
@@ -29,7 +30,11 @@ pub struct ServiceState {
 }
 
 impl ServiceState {
-    pub async fn try_new(config: ServiceConfig, storage: Box<dyn Storage>) -> Result<Arc<Self>> {
+    pub async fn try_new(
+        config: ServiceConfig,
+        storage: Box<dyn Storage>,
+        auth: Option<Box<dyn Auth>>,
+    ) -> Result<Arc<Self>> {
         let (stat_sender, stat_receiver) = watch::channel(HashMap::new());
         let state = Arc::new(Self {
             config,

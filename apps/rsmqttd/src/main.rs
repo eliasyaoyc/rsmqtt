@@ -10,14 +10,17 @@ mod ws_transport;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use service::{ServiceState, Storage, StorageMemory};
+use serde_yaml::Value;
+use service::auth::{Auth, BasicAuth};
+use service::storage::{MemoryStorage, Storage};
+use service::ServiceState;
 use structopt::StructOpt;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
-use config::{Config, StorageConfig};
+use config::Config;
 
 const DEFAULT_CONFIG_FILENAME: &str = ".rsmqttd";
 
@@ -38,10 +41,42 @@ fn init_tracing() {
         .init();
 }
 
-fn create_storage(config: StorageConfig) -> Result<Box<dyn Storage>> {
-    match &*config.r#type {
-        "memory" => Ok(Box::new(StorageMemory::default())),
-        _ => anyhow::bail!("unsupported storage type: {}", config.r#type),
+fn create_storage(config: &Value) -> Result<Box<dyn Storage>> {
+    anyhow::ensure!(
+        config.is_mapping(),
+        "invalid storage config, expect mapping"
+    );
+
+    let storage_type = match config.get("type") {
+        Some(Value::String(ty)) => ty.as_str(),
+        Some(_) => anyhow::bail!("invalid storage type, expect string"),
+        None => "memory",
+    };
+
+    tracing::info!(r#type = storage_type, "create storage");
+
+    match storage_type {
+        "memory" => Ok(Box::new(MemoryStorage::default())),
+        _ => anyhow::bail!("unsupported storage type: {}", storage_type),
+    }
+}
+
+fn create_auth(config: &Value) -> Result<Option<Box<dyn Auth>>> {
+    if config.is_null() {
+        return Ok(None);
+    }
+
+    anyhow::ensure!(config.is_mapping(), "invalid auth config, expect mapping");
+
+    let auth_type = match config.get("type") {
+        Some(Value::String(ty)) => ty.as_str(),
+        Some(_) => anyhow::bail!("invalid storage type, expect string"),
+        None => return Ok(None),
+    };
+
+    match auth_type {
+        "basic" => Ok(Some(Box::new(BasicAuth::try_new(config)?))),
+        _ => anyhow::bail!("unsupported auth type: {}", auth_type),
     }
 }
 
@@ -68,9 +103,9 @@ async fn run() -> Result<()> {
         Config::default()
     };
 
-    tracing::info!(r#type = %config.storage.r#type, "create storage");
-    let storage = create_storage(config.storage)?;
-    let state = ServiceState::try_new(config.service, storage).await?;
+    let storage = create_storage(&config.storage)?;
+    let auth = create_auth(&config.auth)?;
+    let state = ServiceState::try_new(config.service, storage, auth).await?;
 
     tokio::spawn(service::sys_topics_update_loop(state.clone()));
     server::run(state, config.network).await

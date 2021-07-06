@@ -3,7 +3,9 @@ members = [
     "libs/codec",
     "libs/service",
     "libs/testutil",
+    "libs/passwd",
 
     "apps/rsmqttd",
+    "apps/rsmqtt_passwd",
     "apps/rsmqtt_bench",
 ]

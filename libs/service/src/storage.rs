@@ -1,4 +1,4 @@
-pub mod memory;
+mod memory;
 
 use std::num::NonZeroU16;
 use std::sync::Arc;
@@ -7,6 +7,8 @@ use anyhow::Result;
 use bytestring::ByteString;
 use codec::{LastWill, Publish, SubscribeFilter};
 use tokio::sync::Notify;
+
+pub use memory::MemoryStorage;
 
 use crate::filter::TopicFilter;
 use crate::message::Message;

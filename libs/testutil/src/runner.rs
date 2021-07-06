@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use bytestring::ByteString;
 use codec::{Codec, Packet};
 use futures_util::future::BoxFuture;
-use service::{client_loop, RemoteAddr, ServiceState, StorageMemory};
+use service::{client_loop, RemoteAddr, ServiceState};
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 use tokio::sync::Mutex;
 
@@ -17,9 +17,13 @@ struct RunnerContext {
 }
 
 pub async fn run(suite: Suite) {
-    let state = ServiceState::try_new(suite.config, Box::new(StorageMemory::default()))
-        .await
-        .unwrap();
+    let state = ServiceState::try_new(
+        suite.config,
+        Box::new(service::storage::MemoryStorage::default()),
+        None,
+    )
+    .await
+    .unwrap();
     let ctx = Arc::new(Mutex::new(RunnerContext {
         state,
         clients: HashMap::new(),
