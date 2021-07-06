@@ -14,7 +14,7 @@ pub struct Config {
     pub storage: Value,
 
     #[serde(default)]
-    pub auth: Value,
+    pub plugins: Vec<Value>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

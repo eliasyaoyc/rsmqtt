@@ -1,19 +1,18 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::default_trait_access)]
 
-mod acl;
 mod api;
 mod config;
 mod server;
 mod ws_transport;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde_yaml::Value;
-use service::auth::{Auth, BasicAuth};
-use service::storage::{MemoryStorage, Storage};
-use service::ServiceState;
+use service::{Plugin, PluginFactory, ServiceState, Storage};
+use storage_memory::MemoryStorage;
 use structopt::StructOpt;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -41,7 +40,7 @@ fn init_tracing() {
         .init();
 }
 
-fn create_storage(config: &Value) -> Result<Box<dyn Storage>> {
+fn create_storage(config: Value) -> Result<Box<dyn Storage>> {
     anyhow::ensure!(
         config.is_mapping(),
         "invalid storage config, expect mapping"
@@ -61,23 +60,36 @@ fn create_storage(config: &Value) -> Result<Box<dyn Storage>> {
     }
 }
 
-fn create_auth(config: &Value) -> Result<Option<Box<dyn Auth>>> {
-    if config.is_null() {
-        return Ok(None);
-    }
-
-    anyhow::ensure!(config.is_mapping(), "invalid auth config, expect mapping");
-
-    let auth_type = match config.get("type") {
-        Some(Value::String(ty)) => ty.as_str(),
-        Some(_) => anyhow::bail!("invalid storage type, expect string"),
-        None => return Ok(None),
+macro_rules! register_plugin {
+    ($feature:literal, $registry:expr, $ty:expr) => {
+        #[cfg(feature = $feature)]
+        {
+            let factory = $ty;
+            $registry.insert(factory.name(), Box::new(factory) as Box<dyn PluginFactory>);
+        }
     };
+}
 
-    match auth_type {
-        "basic" => Ok(Some(Box::new(BasicAuth::try_new(config)?))),
-        _ => anyhow::bail!("unsupported auth type: {}", auth_type),
+async fn create_plugins(configs: Vec<Value>) -> Result<Vec<(&'static str, Box<dyn Plugin>)>> {
+    let mut registry: HashMap<&'static str, Box<dyn PluginFactory>> = HashMap::new();
+    let mut plugins = Vec::new();
+
+    register_plugin!("basic-auth", registry, rsmqtt_plugin_basic_auth::BasicAuth);
+
+    for config in configs {
+        let value = config.get("type").cloned().unwrap_or_default();
+        let plugin_type = match config.get("type") {
+            Some(Value::String(ty)) => ty.as_str(),
+            Some(_) => anyhow::bail!("invalid plugin type, expect string"),
+            None => anyhow::bail!("require plugin type"),
+        };
+        let (name, factory) = registry
+            .get_key_value(plugin_type)
+            .ok_or_else(|| anyhow::anyhow!("plugin not registered: {}", plugin_type))?;
+        plugins.push((*name, factory.create(value).await?));
     }
+
+    Ok(plugins)
 }
 
 async fn run() -> Result<()> {
@@ -103,9 +115,9 @@ async fn run() -> Result<()> {
         Config::default()
     };
 
-    let storage = create_storage(&config.storage)?;
-    let auth = create_auth(&config.auth)?;
-    let state = ServiceState::try_new(config.service, storage, auth).await?;
+    let storage = create_storage(config.storage)?;
+    let plugins = create_plugins(config.plugins).await?;
+    let state = ServiceState::try_new(config.service, storage, plugins).await?;
 
     tokio::spawn(service::sys_topics_update_loop(state.clone()));
     server::run(state, config.network).await

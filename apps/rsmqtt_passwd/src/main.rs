@@ -1,4 +1,4 @@
-use passwd::HashType;
+use passwd_util::HashType;
 use structopt::StructOpt;
 
 #[derive(StructOpt)]

@@ -8,11 +8,8 @@ use bytestring::ByteString;
 use codec::{LastWill, Publish, Qos, RetainHandling, SubscribeFilter};
 use fnv::FnvHashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use service::{Message, SessionInfo, Storage, StorageMetrics, TopicFilter};
 use tokio::sync::Notify;
-
-use crate::filter::TopicFilter;
-use crate::message::Message;
-use crate::storage::{SessionInfo, Storage, StorageMetrics};
 
 macro_rules! session_not_found {
     ($client_id:expr) => {

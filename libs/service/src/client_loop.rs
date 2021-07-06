@@ -18,7 +18,7 @@ use fnv::FnvHashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot, Notify};
 
-use crate::error::{Error, MqttError};
+use crate::error::Error;
 use crate::filter::{self, TopicFilter};
 use crate::message::Message;
 use crate::state::Control;
@@ -52,6 +52,7 @@ pub struct Connection<R, W> {
     remote_addr: RemoteAddr,
     client_id: Option<ByteString>,
     control_sender: Option<mpsc::UnboundedSender<Control>>,
+    uid: Option<String>,
     notify: Arc<Notify>,
     codec: Codec<R, W>,
     session_expiry_interval: u32,
@@ -99,9 +100,9 @@ where
                 }
                 Ok(())
             }
-            Err(EncodeError::PayloadTooLarge) => {
-                Err(MqttError::new(DisconnectReasonCode::PacketTooLarge).into())
-            }
+            Err(EncodeError::PayloadTooLarge) => Err(Error::server_disconnect(
+                DisconnectReasonCode::PacketTooLarge,
+            )),
             Err(err) => Err(err.into()),
         }
     }
@@ -130,9 +131,9 @@ where
             Packet::Unsubscribe(unsubscribe) => self.handle_unsubscribe(unsubscribe).await,
             Packet::PingReq => self.handle_ping_req().await,
             Packet::Disconnect(disconnect) => self.handle_disconnect(disconnect).await,
-            Packet::SubAck(_) | Packet::ConnAck(_) | Packet::UnsubAck(_) | Packet::PingResp => {
-                Err(MqttError::new(DisconnectReasonCode::ProtocolError).into())
-            }
+            Packet::SubAck(_) | Packet::ConnAck(_) | Packet::UnsubAck(_) | Packet::PingResp => Err(
+                Error::server_disconnect(DisconnectReasonCode::ProtocolError),
+            ),
         }
     }
 
@@ -140,7 +141,9 @@ where
         let mut conn_ack_properties = ConnAckProperties::default();
 
         if self.client_id.is_some() {
-            return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            ));
         }
 
         let session_expiry_interval = {
@@ -243,7 +246,9 @@ where
                     properties: ConnAckProperties::default(),
                 }))
                 .await?;
-                return Err(Error::ServerDisconnectWithoutReason);
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ));
             }
 
             connect.client_id = format!("auto-{}", uuid::Uuid::new_v4()).into();
@@ -256,6 +261,30 @@ where
             .map(|last_will| last_will.properties.delay_interval)
             .flatten()
             .unwrap_or_default();
+
+        // auth
+        let mut uid = None;
+        if let Some(login) = &connect.login {
+            for (name, plugin) in &self.state.plugins {
+                match plugin.auth(&login.username, &login.password).await {
+                    Ok(Some(res_uid)) => {
+                        uid = Some(res_uid);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        tracing::error!(
+                            plugin = %name,
+                            error = %err,
+                            "failed to call plugin::auth"
+                        );
+                        return Err(Error::server_disconnect(
+                            DisconnectReasonCode::UnspecifiedError,
+                        ));
+                    }
+                }
+            }
+        }
 
         let (session_present, notify) = match self
             .state
@@ -275,7 +304,9 @@ where
                     error = %err,
                     "failed to create session"
                 );
-                return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ));
             }
         };
 
@@ -291,6 +322,7 @@ where
             }
         }
 
+        self.uid = uid;
         self.notify = notify;
         self.client_id = Some(connect.client_id.clone());
         self.keep_alive = keep_alive;
@@ -315,10 +347,14 @@ where
                     .send(Control::SessionTakenOver(tx_reply))
                     .is_err()
                 {
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
                 if rx_reply.await.is_err() {
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
             } else {
                 connections.insert(
@@ -356,7 +392,9 @@ where
                     error = %err,
                     "failed to take all inflight packets"
                 );
-                return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ));
             }
         }
 
@@ -366,7 +404,11 @@ where
     async fn handle_publish(&mut self, mut publish: Publish) -> Result<(), Error> {
         let client_id = match self.client_id.clone() {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
 
         self.state
@@ -378,28 +420,40 @@ where
         {
             // A Topic Alias value of 0 or greater than the Maximum Topic Alias is a Protocol Error, the
             // receiver uses DISCONNECT with Reason Code of 0x94 (Topic Alias invalid) as described in section 4.13.
-            return Err(MqttError::new(DisconnectReasonCode::TopicAliasInvalid).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::TopicAliasInvalid,
+            ));
         }
 
         if publish.topic.is_empty() && publish.properties.topic_alias.is_none() {
             // It is a Protocol Error if the Topic Name is zero length and there is no Topic Alias.
-            return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            ));
         }
 
         if publish.qos > Qos::AtMostOnce && publish.packet_id.is_none() {
-            return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            ));
         }
 
         if !publish.properties.subscription_identifiers.is_empty() {
-            return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            ));
         }
 
         if publish.topic.starts_with('$') {
-            return Err(MqttError::new(DisconnectReasonCode::TopicNameInvalid).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::TopicNameInvalid,
+            ));
         }
 
         if !publish.topic.is_empty() && !filter::valid_topic(&publish.topic) {
-            return Err(MqttError::new(DisconnectReasonCode::TopicNameInvalid).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::TopicNameInvalid,
+            ));
         }
 
         if publish.retain && !self.state.config.retain_available {
@@ -407,7 +461,9 @@ where
             // with its value set to 0 and it receives a PUBLISH packet with the RETAIN flag is
             // set to 1, then it uses the DISCONNECT Reason Code of 0x9A (Retain not supported) as
             // described in section 4.13.
-            return Err(MqttError::new(DisconnectReasonCode::RetainNotSupported).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::RetainNotSupported,
+            ));
         }
 
         publish.topic = match publish.properties.topic_alias {
@@ -419,12 +475,16 @@ where
                 if let Some(topic) = self.topic_alias.get(&topic_alias) {
                     topic.clone()
                 } else {
-                    return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::ProtocolError,
+                    ));
                 }
             }
             None if !publish.topic.is_empty() => publish.topic.clone(),
             None => {
-                return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ));
             }
         };
 
@@ -457,7 +517,9 @@ where
                         error = %err,
                         "failed to publish message",
                     );
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
             }
             Qos::AtLeastOnce => {
@@ -466,7 +528,9 @@ where
                         error = %err,
                         "failed to publish message",
                     );
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
                 self.send_packet(&Packet::PubAck(PubAck {
                     packet_id: packet_id.unwrap(),
@@ -478,7 +542,9 @@ where
             Qos::ExactlyOnce => {
                 if self.receive_in_quota == 0 {
                     self.state.metrics.inc_msg_dropped(1);
-                    return Err(MqttError::new(DisconnectReasonCode::ReceiveMaximumExceeded).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::ReceiveMaximumExceeded,
+                    ));
                 }
 
                 match self
@@ -509,7 +575,9 @@ where
                             error = %err,
                             "failed to save qos2 message",
                         );
-                        return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                        return Err(Error::server_disconnect(
+                            DisconnectReasonCode::UnspecifiedError,
+                        ));
                     }
                 }
             }
@@ -521,7 +589,11 @@ where
     async fn handle_pub_ack(&mut self, pub_ack: PubAck) -> Result<(), Error> {
         let client_id = match &self.client_id {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
 
         tracing::debug!(
@@ -541,10 +613,14 @@ where
                 self.receive_out_quota += 1;
                 Ok(())
             }
-            Ok(None) => Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            Ok(None) => Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            )),
             Err(err) => {
                 tracing::error!(error = %err, "failed to get inflight packet");
-                Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into())
+                Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ))
             }
         }
     }
@@ -552,14 +628,20 @@ where
     async fn handle_pub_rec(&mut self, pub_rec: PubRec) -> Result<(), Error> {
         let client_id = match &self.client_id {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
 
         if !matches!(
             self.inflight_qos2_messages.get(&pub_rec.packet_id),
             Some(Qos2State::Published)
         ) {
-            return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            ));
         }
         self.inflight_qos2_messages
             .insert(pub_rec.packet_id, Qos2State::Recorded);
@@ -572,10 +654,16 @@ where
                 .await
             {
                 Ok(Some(_)) => {}
-                Ok(None) => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+                Ok(None) => {
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::ProtocolError,
+                    ))
+                }
                 Err(err) => {
                     tracing::error!(error = %err, "failed to get inflight packet");
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
             }
             return Ok(());
@@ -596,10 +684,14 @@ where
                 .await?;
                 Ok(())
             }
-            Ok(None) => Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            Ok(None) => Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            )),
             Err(err) => {
                 tracing::error!(error = %err, "failed to get inflight packet");
-                Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into())
+                Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ))
             }
         }
     }
@@ -607,7 +699,11 @@ where
     async fn handle_pub_rel(&mut self, pub_rel: PubRel) -> Result<(), Error> {
         let client_id = match &self.client_id {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
 
         match self
@@ -622,7 +718,9 @@ where
                         error = %err,
                         "failed to publish message",
                     );
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
 
                 self.send_packet(&Packet::PubComp(PubComp {
@@ -652,7 +750,9 @@ where
                     error = %err,
                     "failed to get uncompleted message",
                 );
-                return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ));
             }
         }
 
@@ -662,14 +762,20 @@ where
     async fn handle_pub_comp(&mut self, pub_comp: PubComp) -> Result<(), Error> {
         let client_id = match &self.client_id {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
 
         if !matches!(
             self.inflight_qos2_messages.get(&pub_comp.packet_id),
             Some(Qos2State::Recorded)
         ) {
-            return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+            return Err(Error::server_disconnect(
+                DisconnectReasonCode::ProtocolError,
+            ));
         }
         self.inflight_qos2_messages.remove(&pub_comp.packet_id);
 
@@ -702,7 +808,9 @@ where
                     error = %err,
                     "failed to get inflight packet",
                 );
-                return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ));
             }
         }
 
@@ -712,7 +820,11 @@ where
     async fn handle_subscribe(&mut self, subscribe: Subscribe) -> Result<(), Error> {
         let client_id = match &self.client_id {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
 
         let mut reason_codes = Vec::with_capacity(subscribe.filters.len());
@@ -728,7 +840,9 @@ where
 
             if topic_filter.is_share() && filter.no_local {
                 // It is a Protocol Error to set the No Local bit to 1 on a Shared Subscription [MQTT-3.8.3-4].
-                return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ));
             }
 
             if !self.state.config.wildcard_subscription_available && topic_filter.has_wildcards() {
@@ -772,7 +886,11 @@ where
     async fn handle_unsubscribe(&mut self, unsubscribe: Unsubscribe) -> Result<(), Error> {
         let client_id = match &self.client_id {
             Some(client_id) => client_id,
-            None => return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into()),
+            None => {
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::ProtocolError,
+                ))
+            }
         };
         let mut reason_codes = Vec::new();
 
@@ -798,7 +916,9 @@ where
                         error = %err,
                         "failed to unsubscribe",
                     );
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
             }
         }
@@ -825,8 +945,9 @@ where
         if disconnect.reason_code == DisconnectReasonCode::NormalDisconnection {
             self.last_will = None;
         }
-        Err(Error::ClientDisconnect(
-            MqttError::new(disconnect.reason_code).with_properties(disconnect.properties),
+        Err(Error::client_disconnect(
+            disconnect.reason_code,
+            disconnect.properties,
         ))
     }
 
@@ -884,7 +1005,9 @@ where
                     error = %err,
                     "failed to publish message to client",
                 );
-                return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                return Err(Error::server_disconnect(
+                    DisconnectReasonCode::UnspecifiedError,
+                ));
             }
 
             if consume_count > 0 {
@@ -898,7 +1021,9 @@ where
                         error = %err,
                         "failed to consume messages",
                     );
-                    return Err(MqttError::new(DisconnectReasonCode::UnspecifiedError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::UnspecifiedError,
+                    ));
                 }
             }
         }
@@ -944,7 +1069,9 @@ where
                         error = %err,
                         "failed to add inflight packet",
                     );
-                    return Err(MqttError::new(DisconnectReasonCode::ProtocolError).into());
+                    return Err(Error::server_disconnect(
+                        DisconnectReasonCode::ProtocolError,
+                    ));
                 }
                 self.inflight_qos2_messages
                     .insert(packet_id, Qos2State::Published);
@@ -970,6 +1097,7 @@ pub async fn client_loop(
         remote_addr,
         client_id: None,
         control_sender: Some(control_sender),
+        uid: None,
         notify: Arc::new(Notify::new()),
         codec: Codec::new(reader, writer),
         session_expiry_interval: 0,
@@ -1014,19 +1142,19 @@ pub async fn client_loop(
                         );
                         match connection.handle_packet(packet).await {
                             Ok(_) => {}
-                            Err(Error::ServerDisconnect(err)) => {
+                            Err(Error::ServerDisconnect { reason_code, properties }) => {
                                 tracing::debug!(
                                     remote_addr = %connection.remote_addr,
-                                    error = %err,
+                                    reason_code = ?reason_code,
                                     "server disconnect",
                                 );
                                 connection.send_disconnect(
-                                    err.reason_code,
-                                    Some(err.properties),
+                                    reason_code,
+                                    Some(properties),
                                 ).await.ok();
                                 break;
                             }
-                            Err(Error::ServerDisconnectWithoutReason | Error::ClientDisconnect(_)) => break,
+                            Err(Error::ClientDisconnect { .. }) => break,
                             Err(err) => {
                                 tracing::debug!(
                                     remote_addr = %connection.remote_addr,

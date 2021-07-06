@@ -3,7 +3,12 @@ members = [
     "libs/codec",
     "libs/service",
     "libs/testutil",
-    "libs/passwd",
+    "libs/passwd_util",
+
+    "libs/storages/memory",
+
+    "libs/plugins/basic-auth",
+    "libs/plugins/oso-acl",
 
     "apps/rsmqttd",
     "apps/rsmqtt_passwd",

@@ -120,30 +120,28 @@ impl HashType {
                 .to_string(),
         }
     }
+}
 
-    pub fn verify_password(&self, phc: impl AsRef<str>, password: impl AsRef<[u8]>) -> bool {
-        let parsed_hash = match PasswordHash::new(phc.as_ref()) {
-            Ok(parsed_hash) => parsed_hash,
-            Err(_) => return false,
-        };
+pub fn verify_password(phc: impl AsRef<str>, password: impl AsRef<[u8]>) -> bool {
+    let parsed_hash = match PasswordHash::new(phc.as_ref()) {
+        Ok(parsed_hash) => parsed_hash,
+        Err(_) => return false,
+    };
 
-        const PBKDF2_SHA256: Ident = Ident::new("pbkdf2-sha256");
-        const PBKDF2_SHA512: Ident = Ident::new("pbkdf2-sha512");
+    const PBKDF2_SHA256: Ident = Ident::new("pbkdf2-sha256");
+    const PBKDF2_SHA512: Ident = Ident::new("pbkdf2-sha512");
 
-        match parsed_hash.algorithm {
-            argon2::ARGON2I_IDENT | argon2::ARGON2D_IDENT | argon2::ARGON2ID_IDENT => {
-                Argon2::default()
-                    .verify_password(password.as_ref(), &parsed_hash)
-                    .is_ok()
-            }
-            PBKDF2_SHA256 | PBKDF2_SHA512 => Pbkdf2
-                .verify_password(password.as_ref(), &parsed_hash)
-                .is_ok(),
-            scrypt::ALG_ID => Scrypt
-                .verify_password(password.as_ref(), &parsed_hash)
-                .is_ok(),
-            _ => false,
-        }
+    match parsed_hash.algorithm {
+        argon2::ARGON2I_IDENT | argon2::ARGON2D_IDENT | argon2::ARGON2ID_IDENT => Argon2::default()
+            .verify_password(password.as_ref(), &parsed_hash)
+            .is_ok(),
+        PBKDF2_SHA256 | PBKDF2_SHA512 => Pbkdf2
+            .verify_password(password.as_ref(), &parsed_hash)
+            .is_ok(),
+        scrypt::ALG_ID => Scrypt
+            .verify_password(password.as_ref(), &parsed_hash)
+            .is_ok(),
+        _ => false,
     }
 }
 
@@ -165,8 +163,8 @@ mod tests {
         for hash_type in types {
             let password = "123456";
             let phc = hash_type.create_phc(password);
-            assert!(hash_type.verify_password(&phc, password));
-            assert!(!hash_type.verify_password(&phc, "abcdef"));
+            assert!(verify_password(&phc, password));
+            assert!(!verify_password(&phc, "abcdef"));
         }
     }
 }

@@ -1346,7 +1346,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rsmqtt-passwd"
+name = "rsmqtt-passwd-util"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1359,6 +1359,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsmqtt-plugin-basic-auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "rsmqtt-passwd-util",
+ "rsmqtt-service",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "rsmqtt-plugin-oso-acl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "oso",
+ "rsmqtt-service",
+ "serde",
+ "serde_yaml",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rsmqtt-service"
 version = "0.1.0"
 dependencies = [
@@ -1366,12 +1392,9 @@ dependencies = [
  "async-trait",
  "bytes",
  "bytestring",
- "fastrand",
  "fnv",
  "indexmap",
- "parking_lot",
  "rsmqtt-codec",
- "rsmqtt-passwd",
  "serde",
  "serde_yaml",
  "thiserror",
@@ -1383,6 +1406,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsmqtt-storage-memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytestring",
+ "fastrand",
+ "fnv",
+ "parking_lot",
+ "rsmqtt-codec",
+ "rsmqtt-service",
+ "tokio",
+]
+
+[[package]]
 name = "rsmqtt-testutil"
 version = "0.1.0"
 dependencies = [
@@ -1390,6 +1428,7 @@ dependencies = [
  "futures-util",
  "rsmqtt-codec",
  "rsmqtt-service",
+ "rsmqtt-storage-memory",
  "serde",
  "serde_yaml",
  "tokio",
@@ -1412,7 +1451,7 @@ dependencies = [
 name = "rsmqtt_passwd"
 version = "0.1.0"
 dependencies = [
- "rsmqtt-passwd",
+ "rsmqtt-passwd-util",
  "structopt",
 ]
 
@@ -1428,9 +1467,10 @@ dependencies = [
  "dirs",
  "fnv",
  "futures-util",
- "oso",
  "rsmqtt-codec",
+ "rsmqtt-plugin-basic-auth",
  "rsmqtt-service",
+ "rsmqtt-storage-memory",
  "rsmqtt-testutil",
  "serde",
  "serde_yaml",
